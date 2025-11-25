@@ -1,4 +1,4 @@
-import type { ChatHubProvider, ChatHubMessageType, ChatHubMessageState } from '@n8n/api-types';
+import type { ChatHubProvider, ChatHubMessageType, ChatHubMessageStatus } from '@n8n/api-types';
 import { ExecutionEntity, WithTimestamps, WorkflowEntity } from '@n8n/db';
 import {
 	Column,
@@ -11,6 +11,7 @@ import {
 } from '@n8n/typeorm';
 
 import type { ChatHubSession } from './chat-hub-session.entity';
+import type { IBinaryData } from 'n8n-workflow';
 
 @Entity({ name: 'chat_hub_messages' })
 export class ChatHubMessage extends WithTimestamps {
@@ -77,6 +78,13 @@ export class ChatHubMessage extends WithTimestamps {
 	workflow?: Relation<WorkflowEntity> | null;
 
 	/**
+	 * ID of the custom agent that produced this message (if applicable).
+	 * Only set when provider is 'custom-agent'.
+	 */
+	@Column({ type: 'varchar', length: 36, nullable: true })
+	agentId: string | null;
+
+	/**
 	 * ID of an execution that produced this message (reset to null when the execution is deleted).
 	 */
 	@Column({ type: 'int', nullable: true })
@@ -112,28 +120,6 @@ export class ChatHubMessage extends WithTimestamps {
 	responses?: Array<Relation<ChatHubMessage>>;
 
 	/**
-	 * Root message of a conversation turn (Human message + AI responses)
-	 */
-	@Column({ type: String })
-	turnId: string;
-
-	/**
-	 * Message that began the turn, probably from the human/user.
-	 */
-	@ManyToOne('ChatHubMessage', (m: ChatHubMessage) => m.turnMessages, {
-		onDelete: 'CASCADE',
-		nullable: true,
-	})
-	@JoinColumn({ name: 'turnId' })
-	turn?: Relation<ChatHubMessage> | null;
-
-	/**
-	 * All messages that are part of this turn (including the root message).
-	 */
-	@OneToMany('ChatHubMessage', (m: ChatHubMessage) => m.turn)
-	turnMessages?: Array<Relation<ChatHubMessage>>;
-
-	/**
 	 * ID of the message that this message is a retry of (if applicable).
 	 */
 	@Column({ type: String, nullable: true })
@@ -154,12 +140,6 @@ export class ChatHubMessage extends WithTimestamps {
 	 */
 	@OneToMany('ChatHubMessage', (m: ChatHubMessage) => m.retryOfMessage)
 	retries?: Array<Relation<ChatHubMessage>>;
-
-	/**
-	 * The nth time this message has been generated/retried within the turn (0 = first attempt).
-	 */
-	@Column({ type: 'int', default: 0 })
-	runIndex: number;
 
 	/**
 	 * ID of the message that this message is a revision/edit of (if applicable).
@@ -184,8 +164,17 @@ export class ChatHubMessage extends WithTimestamps {
 	revisions?: Array<Relation<ChatHubMessage>>;
 
 	/**
-	 * State of the message, e.g. 'active', 'superseded'.
+	 * Status of the message, e.g. 'running', 'success', 'error', 'cancelled'.
 	 */
-	@Column({ type: 'varchar', length: 16, default: 'active' })
-	state: ChatHubMessageState;
+	@Column({ type: 'varchar', length: 16, default: 'success' })
+	status: ChatHubMessageStatus;
+
+	/**
+	 * File attachments for the message (if any), stored as JSON.
+	 * Storage strategy depends on the binary data mode configuration:
+	 * - When using external storage (e.g., filesystem-v2): Only metadata is stored, with 'id' referencing the external location
+	 * - When using default mode: Base64-encoded data is stored directly in the 'data' field
+	 */
+	@Column({ type: 'json', nullable: true })
+	attachments: Array<IBinaryData> | null;
 }

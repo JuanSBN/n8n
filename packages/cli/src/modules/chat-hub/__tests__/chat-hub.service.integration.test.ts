@@ -1,12 +1,14 @@
-import { testDb, testModules } from '@n8n/backend-test-utils';
+import { mockInstance, testDb, testModules } from '@n8n/backend-test-utils';
 import type { User } from '@n8n/db';
 import { Container } from '@n8n/di';
-
+import { BinaryDataService } from 'n8n-core';
 import { createAdmin, createMember } from '@test-integration/db/users';
 
 import { ChatHubService } from '../chat-hub.service';
 import { ChatHubMessageRepository } from '../chat-message.repository';
 import { ChatHubSessionRepository } from '../chat-session.repository';
+
+mockInstance(BinaryDataService);
 
 beforeAll(async () => {
 	await testModules.loadModules(['chat-hub']);
@@ -46,9 +48,9 @@ describe('chatHub', () => {
 
 	describe('getConversations', () => {
 		it('should list empty conversations', async () => {
-			const conversations = await chatHubService.getConversations(member.id);
+			const conversations = await chatHubService.getConversations(member.id, 20);
 			expect(conversations).toBeDefined();
-			expect(conversations).toHaveLength(0);
+			expect(conversations.data).toHaveLength(0);
 		});
 
 		it("should list user's own conversations in expected order", async () => {
@@ -57,31 +59,206 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const session2 = await sessionsRepository.createChatSession({
 				id: crypto.randomUUID(),
 				ownerId: member.id,
 				title: 'session 2',
 				lastMessageAt: new Date('2025-01-02T00:00:00Z'),
+				tools: [],
 			});
 			const session3 = await sessionsRepository.createChatSession({
 				id: crypto.randomUUID(),
 				ownerId: member.id,
 				title: 'session 3',
 				lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+				tools: [],
 			});
 			await sessionsRepository.createChatSession({
 				id: crypto.randomUUID(),
 				ownerId: admin.id,
 				title: 'admin session',
 				lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+				tools: [],
 			});
 
-			const conversations = await chatHubService.getConversations(member.id);
-			expect(conversations).toHaveLength(3);
-			expect(conversations[0].id).toBe(session1.id);
-			expect(conversations[1].id).toBe(session2.id);
-			expect(conversations[2].id).toBe(session3.id);
+			const conversations = await chatHubService.getConversations(member.id, 20);
+			expect(conversations.data).toHaveLength(3);
+			expect(conversations.data[0].id).toBe(session1.id);
+			expect(conversations.data[1].id).toBe(session2.id);
+			expect(conversations.data[2].id).toBe(session3.id);
+		});
+
+		describe('pagination', () => {
+			it('should return hasMore=false and nextCursor=null when all sessions fit in one page', async () => {
+				await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 1',
+					lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+					tools: [],
+				});
+
+				const conversations = await chatHubService.getConversations(member.id, 10);
+
+				expect(conversations.data).toHaveLength(1);
+				expect(conversations.hasMore).toBe(false);
+				expect(conversations.nextCursor).toBeNull();
+			});
+
+			it('should fetch next page using cursor', async () => {
+				const session1 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 1',
+					lastMessageAt: new Date('2025-01-05T00:00:00Z'),
+					tools: [],
+				});
+
+				const session2 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 2',
+					lastMessageAt: new Date('2025-01-04T00:00:00Z'),
+					tools: [],
+				});
+
+				const session3 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 3',
+					lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+					tools: [],
+				});
+
+				const session4 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 4',
+					lastMessageAt: new Date('2025-01-02T00:00:00Z'),
+					tools: [],
+				});
+
+				// First page
+				const page1 = await chatHubService.getConversations(member.id, 2);
+				expect(page1.data).toHaveLength(2);
+				expect(page1.data[0].id).toBe(session1.id);
+				expect(page1.data[1].id).toBe(session2.id);
+				expect(page1.hasMore).toBe(true);
+				expect(page1.nextCursor).toBe(session2.id);
+
+				// Second page using cursor
+				const page2 = await chatHubService.getConversations(member.id, 2, page1.nextCursor!);
+				expect(page2.data).toHaveLength(2);
+				expect(page2.data[0].id).toBe(session3.id);
+				expect(page2.data[1].id).toBe(session4.id);
+				expect(page2.hasMore).toBe(false);
+				expect(page2.nextCursor).toBeNull();
+			});
+
+			it('should handle sessions with same lastMessageAt using id for ordering', async () => {
+				const sameDate = new Date('2025-01-01T00:00:00Z');
+
+				const session1 = await sessionsRepository.createChatSession({
+					id: '00000000-0000-0000-0000-000000000001',
+					ownerId: member.id,
+					title: 'Session 1',
+					lastMessageAt: sameDate,
+					tools: [],
+				});
+
+				const session2 = await sessionsRepository.createChatSession({
+					id: '00000000-0000-0000-0000-000000000002',
+					ownerId: member.id,
+					title: 'Session 2',
+					lastMessageAt: sameDate,
+					tools: [],
+				});
+
+				const session3 = await sessionsRepository.createChatSession({
+					id: '00000000-0000-0000-0000-000000000003',
+					ownerId: member.id,
+					title: 'Session 3',
+					lastMessageAt: sameDate,
+					tools: [],
+				});
+
+				// Fetch first page
+				const page1 = await chatHubService.getConversations(member.id, 2);
+				expect(page1.data).toHaveLength(2);
+				expect(page1.data[0].id).toBe(session1.id);
+				expect(page1.data[1].id).toBe(session2.id);
+				expect(page1.hasMore).toBe(true);
+
+				// Fetch second page
+				const page2 = await chatHubService.getConversations(member.id, 2, page1.nextCursor!);
+				expect(page2.data).toHaveLength(1);
+				expect(page2.data[0].id).toBe(session3.id);
+				expect(page2.hasMore).toBe(false);
+			});
+
+			it('should throw error when cursor session does not exist', async () => {
+				await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'session 1',
+					lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+					tools: [],
+				});
+
+				const nonExistentCursor = '00000000-0000-0000-0000-000000000000';
+
+				await expect(
+					chatHubService.getConversations(member.id, 10, nonExistentCursor),
+				).rejects.toThrow('Cursor session not found');
+			});
+
+			it('should throw error when cursor session belongs to different user', async () => {
+				await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'Member Session',
+					lastMessageAt: new Date('2025-01-02T00:00:00Z'),
+					tools: [],
+				});
+
+				const adminSession = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: admin.id,
+					title: 'Admin Session',
+					lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+					tools: [],
+				});
+
+				await expect(
+					chatHubService.getConversations(member.id, 10, adminSession.id),
+				).rejects.toThrow('Cursor session not found');
+			});
+
+			it('should handle sessions with null lastMessageAt', async () => {
+				const session1 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'Session with date',
+					lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+					tools: [],
+				});
+
+				const session2 = await sessionsRepository.createChatSession({
+					id: crypto.randomUUID(),
+					ownerId: member.id,
+					title: 'Session without date',
+					lastMessageAt: null,
+					tools: [],
+				});
+
+				const conversations = await chatHubService.getConversations(member.id, 10);
+
+				expect(conversations.data).toHaveLength(2);
+				expect(conversations.data[0].id).toBe(session1.id);
+				expect(conversations.data[1].id).toBe(session2.id);
+			});
 		});
 	});
 
@@ -98,6 +275,7 @@ describe('chatHub', () => {
 				ownerId: admin.id,
 				title: 'admin session',
 				lastMessageAt: new Date('2025-01-01T00:00:00Z'),
+				tools: [],
 			});
 			await expect(chatHubService.getConversation(member.id, session.id)).rejects.toThrow(
 				'Chat session not found',
@@ -110,6 +288,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const conversation = await chatHubService.getConversation(member.id, session.id);
 			expect(conversation).toBeDefined();
@@ -123,6 +302,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const ids = [
 				crypto.randomUUID(),
@@ -137,7 +317,6 @@ describe('chatHub', () => {
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1',
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:00:00Z'),
 			});
 			const msg2 = await messagesRepository.createChatMessage({
@@ -147,7 +326,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 2',
 				previousMessageId: msg1.id,
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:05:00Z'),
 			});
 			const msg3 = await messagesRepository.createChatMessage({
@@ -157,7 +335,6 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 3',
 				previousMessageId: msg2.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:10:00Z'),
 			});
 			const msg4 = await messagesRepository.createChatMessage({
@@ -167,7 +344,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4',
 				previousMessageId: msg3.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:15:00Z'),
 			});
 
@@ -176,28 +352,18 @@ describe('chatHub', () => {
 			expect(response).toBeDefined();
 
 			const {
-				conversation: { rootIds, messages, activeMessageChain },
+				conversation: { messages },
 			} = response;
 
-			expect(rootIds).toEqual([msg1.id]);
 			expect(Object.keys(messages)).toHaveLength(4);
-			expect(activeMessageChain).toHaveLength(4);
-			expect(activeMessageChain[0]).toBe(msg1.id);
-			expect(activeMessageChain[1]).toBe(msg2.id);
-			expect(activeMessageChain[2]).toBe(msg3.id);
-			expect(activeMessageChain[3]).toBe(msg4.id);
 			expect(messages[msg1.id].content).toBe('message 1');
 			expect(messages[msg1.id].type).toBe('human');
-			expect(messages[msg1.id].turnId).toBe(msg1.id);
 			expect(messages[msg2.id].content).toBe('message 2');
 			expect(messages[msg2.id].type).toBe('ai');
-			expect(messages[msg2.id].turnId).toBe(msg1.id);
 			expect(messages[msg3.id].content).toBe('message 3');
 			expect(messages[msg3.id].type).toBe('human');
-			expect(messages[msg3.id].turnId).toBe(msg3.id);
 			expect(messages[msg4.id].content).toBe('message 4');
 			expect(messages[msg4.id].type).toBe('ai');
-			expect(messages[msg4.id].turnId).toBe(msg3.id);
 		});
 
 		it('should get conversation with a edit branch', async () => {
@@ -215,6 +381,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const msg1 = await messagesRepository.createChatMessage({
 				id: ids[0],
@@ -222,7 +389,6 @@ describe('chatHub', () => {
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1',
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:00:00Z'),
 			});
 			const msg2 = await messagesRepository.createChatMessage({
@@ -232,7 +398,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 2',
 				previousMessageId: msg1.id,
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:05:00Z'),
 			});
 			const msg3 = await messagesRepository.createChatMessage({
@@ -242,7 +407,6 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 3a',
 				previousMessageId: msg2.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:10:00Z'),
 			});
 			const msg4 = await messagesRepository.createChatMessage({
@@ -252,7 +416,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4a',
 				previousMessageId: msg3.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:15:00Z'),
 			});
 			// Edit message 3 to create a branch
@@ -264,7 +427,6 @@ describe('chatHub', () => {
 				content: 'message 3b',
 				previousMessageId: msg2.id,
 				revisionOfMessageId: msg3.id,
-				turnId: ids[4],
 				createdAt: new Date('2025-01-03T00:20:00Z'),
 			});
 			const msg6 = await messagesRepository.createChatMessage({
@@ -274,7 +436,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4b',
 				previousMessageId: msg5.id,
-				turnId: ids[4],
 				createdAt: new Date('2025-01-03T00:25:00Z'),
 			});
 
@@ -283,16 +444,10 @@ describe('chatHub', () => {
 			expect(response).toBeDefined();
 
 			const {
-				conversation: { rootIds, messages, activeMessageChain },
+				conversation: { messages },
 			} = response;
 
-			expect(rootIds).toEqual([msg1.id]);
 			expect(Object.keys(messages)).toHaveLength(6);
-			expect(activeMessageChain).toHaveLength(4);
-			expect(activeMessageChain[0]).toBe(msg1.id);
-			expect(activeMessageChain[1]).toBe(msg2.id);
-			expect(activeMessageChain[2]).toBe(msg5.id);
-			expect(activeMessageChain[3]).toBe(msg6.id);
 			expect(messages[msg1.id].content).toBe('message 1');
 			expect(messages[msg2.id].content).toBe('message 2');
 			expect(messages[msg3.id].content).toBe('message 3a');
@@ -314,6 +469,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 
 			const msg1 = await messagesRepository.createChatMessage({
@@ -322,7 +478,6 @@ describe('chatHub', () => {
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1a',
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:00:00Z'),
 			});
 			await messagesRepository.createChatMessage({
@@ -332,7 +487,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 2a',
 				previousMessageId: msg1.id,
-				turnId: ids[1],
 				createdAt: new Date('2025-01-03T00:05:00Z'),
 			});
 			// Edit message 1 to create a branch
@@ -343,17 +497,15 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 1b',
 				revisionOfMessageId: msg1.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:10:00Z'),
 			});
-			const msg4 = await messagesRepository.createChatMessage({
+			await messagesRepository.createChatMessage({
 				id: ids[3],
 				sessionId: session.id,
 				name: 'ChatGPT',
 				type: 'ai',
 				content: 'message 2b',
 				previousMessageId: msg3.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:15:00Z'),
 			});
 
@@ -362,14 +514,10 @@ describe('chatHub', () => {
 			expect(response).toBeDefined();
 
 			const {
-				conversation: { rootIds, messages, activeMessageChain },
+				conversation: { messages },
 			} = response;
 
-			expect(rootIds).toEqual([msg1.id, msg3.id]);
 			expect(Object.keys(messages)).toHaveLength(4);
-			expect(activeMessageChain).toHaveLength(2);
-			expect(activeMessageChain[0]).toBe(msg3.id);
-			expect(activeMessageChain[1]).toBe(msg4.id);
 		});
 
 		it('should get conversation with a retry branch at last message', async () => {
@@ -387,6 +535,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const msg1 = await messagesRepository.createChatMessage({
 				id: ids[0],
@@ -394,7 +543,6 @@ describe('chatHub', () => {
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1',
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:00:00Z'),
 			});
 			const msg2 = await messagesRepository.createChatMessage({
@@ -404,7 +552,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 2',
 				previousMessageId: msg1.id,
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:05:00Z'),
 			});
 			const msg3 = await messagesRepository.createChatMessage({
@@ -414,7 +561,6 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 3',
 				previousMessageId: msg2.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:10:00Z'),
 			});
 			const msg4 = await messagesRepository.createChatMessage({
@@ -424,7 +570,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4a',
 				previousMessageId: msg3.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:15:00Z'),
 			});
 			// Retry message 4 to create a branch
@@ -436,7 +581,6 @@ describe('chatHub', () => {
 				content: 'message 4b',
 				previousMessageId: msg3.id,
 				retryOfMessageId: msg4.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:20:00Z'),
 			});
 
@@ -445,16 +589,10 @@ describe('chatHub', () => {
 			expect(response.session.id).toBe(session.id);
 
 			const {
-				conversation: { rootIds, messages, activeMessageChain },
+				conversation: { messages },
 			} = response;
 
-			expect(rootIds).toEqual([msg1.id]);
 			expect(Object.keys(messages)).toHaveLength(5);
-			expect(activeMessageChain).toHaveLength(4);
-			expect(activeMessageChain[0]).toBe(msg1.id);
-			expect(activeMessageChain[1]).toBe(msg2.id);
-			expect(activeMessageChain[2]).toBe(msg3.id);
-			expect(activeMessageChain[3]).toBe(msg5.id);
 			expect(messages[msg5.id].previousMessageId).toBe(msg3.id);
 			expect(messages[msg5.id].retryOfMessageId).toBe(msg4.id);
 		});
@@ -487,6 +625,7 @@ describe('chatHub', () => {
 				ownerId: member.id,
 				title: 'session 1',
 				lastMessageAt: new Date('2025-01-03T00:00:00Z'),
+				tools: [],
 			});
 			const msg1 = await messagesRepository.createChatMessage({
 				id: ids[0],
@@ -494,7 +633,6 @@ describe('chatHub', () => {
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1',
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:00:00Z'),
 			});
 			const msg2 = await messagesRepository.createChatMessage({
@@ -504,7 +642,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 2a',
 				previousMessageId: msg1.id,
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:05:00Z'),
 			});
 			const msg3a = await messagesRepository.createChatMessage({
@@ -514,7 +651,6 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 3a',
 				previousMessageId: msg2.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:10:00Z'),
 			});
 			await messagesRepository.createChatMessage({
@@ -524,7 +660,6 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4a',
 				previousMessageId: msg3a.id,
-				turnId: ids[2],
 				createdAt: new Date('2025-01-03T00:15:00Z'),
 			});
 			const msg3b = await messagesRepository.createChatMessage({
@@ -535,7 +670,6 @@ describe('chatHub', () => {
 				content: 'message 3b',
 				revisionOfMessageId: msg3a.id,
 				previousMessageId: msg2.id,
-				turnId: ids[4],
 				createdAt: new Date('2025-01-03T00:20:00Z'),
 			});
 			await messagesRepository.createChatMessage({
@@ -545,17 +679,15 @@ describe('chatHub', () => {
 				type: 'ai',
 				content: 'message 4b',
 				previousMessageId: msg3b.id,
-				turnId: ids[4],
 				createdAt: new Date('2025-01-03T00:25:00Z'),
 			});
-			const msg1b = await messagesRepository.createChatMessage({
+			await messagesRepository.createChatMessage({
 				id: ids[6],
 				sessionId: session.id,
 				name: 'Nathan',
 				type: 'human',
 				content: 'message 1b',
 				revisionOfMessageId: msg1.id,
-				turnId: ids[6],
 				createdAt: new Date('2025-01-03T00:30:00Z'),
 			});
 			const msg2r = await messagesRepository.createChatMessage({
@@ -566,7 +698,6 @@ describe('chatHub', () => {
 				content: 'message 2b',
 				previousMessageId: msg1.id,
 				retryOfMessageId: msg2.id,
-				turnId: ids[0],
 				createdAt: new Date('2025-01-03T00:35:00Z'),
 			});
 			const msg3d = await messagesRepository.createChatMessage({
@@ -576,17 +707,15 @@ describe('chatHub', () => {
 				type: 'human',
 				content: 'message 3d',
 				previousMessageId: msg2r.id,
-				turnId: ids[8],
 				createdAt: new Date('2025-01-03T00:40:00Z'),
 			});
-			const msg4c = await messagesRepository.createChatMessage({
+			await messagesRepository.createChatMessage({
 				id: crypto.randomUUID(),
 				sessionId: session.id,
 				name: 'ChatGPT',
 				type: 'ai',
 				content: 'message 4c',
 				previousMessageId: msg3d.id,
-				turnId: ids[8],
 				createdAt: new Date('2025-01-03T00:45:00Z'),
 			});
 
@@ -595,17 +724,10 @@ describe('chatHub', () => {
 			expect(response.session.id).toBe(session.id);
 
 			const {
-				conversation: { rootIds, messages, activeMessageChain },
+				conversation: { messages },
 			} = response;
 
-			expect(rootIds).toEqual([msg1.id, msg1b.id]);
 			expect(Object.keys(messages)).toHaveLength(10);
-
-			expect(activeMessageChain).toHaveLength(4);
-			expect(activeMessageChain[0]).toBe(msg1.id);
-			expect(activeMessageChain[1]).toBe(msg2r.id);
-			expect(activeMessageChain[2]).toBe(msg3d.id);
-			expect(activeMessageChain[3]).toBe(msg4c.id);
 
 			expect(messages[msg2r.id].previousMessageId).toBe(msg1.id);
 			expect(messages[msg2r.id].retryOfMessageId).toBe(msg2.id);
